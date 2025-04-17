@@ -1,17 +1,19 @@
+import json
 from typing import Literal
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.constants import END
 from langgraph.graph import StateGraph
-from langgraph.types import Command
+from langgraph.types import Command, StreamWriter
 from pydantic import BaseModel, Field
 
 from a2a.client.client import A2AClient
-from a2a.common.types import TaskSendParams, Message, TextPart, SendTaskResponse, AgentCard, TaskState
+from a2a.common.types import TaskSendParams, Message, TextPart, SendTaskResponse, AgentCard, TaskState, \
+    SendTaskStreamingResponse
 from a2a.utils.card_resolver import A2ACardResolver
 from agent_supervisor.model import AgentState
 
@@ -23,8 +25,8 @@ for agent in [A2ACardResolver("http://localhost:9000").get_agent_card()]:
     assistant_cards[agent.name] = agent
 
 
-class AgentInput(BaseModel):
-    text: str = Field(description="text message to send to agent")
+class SupervisorMessageChunk(BaseModel):
+    content: str = Field(description="Message payload")
 
 
 s_prompt = f"""
@@ -61,14 +63,18 @@ async def call_llm(state: AgentState) -> Command[Literal["__end__", "call_agent"
 
         if 'action' in state and state['action'] == TaskState.INPUT_REQUIRED:
             return Command(
-                goto=END
+                goto=END,
+                update={
+                    "last_agent"  : state['active_agent']
+                }
             )
 
         if 'action' in state and state['action'] == TaskState.COMPLETED:
             return Command(
                 goto=END,
                 update={
-                    "active_agent": None
+                    "active_agent": None,
+                    "last_agent"  : state['active_agent']
                 }
             )
 
@@ -101,14 +107,20 @@ async def call_llm(state: AgentState) -> Command[Literal["__end__", "call_agent"
     )
 
 
-async def default_agent(state: AgentState, config: RunnableConfig):
+async def call_default_agent(state: AgentState, writer:StreamWriter):
+
+    events : list[SupervisorMessageChunk] = []
+    async for event in llm.astream(state['messages'][-1].content):
+        message = SupervisorMessageChunk(content=event.content)
+        events.append(message)
+        writer(message)
     return {
-        "messages": [await llm.ainvoke(state['messages'][-1].content)],
+        "messages" : [AIMessage("".join([x.content for x in events]))],
         "action": TaskState.COMPLETED
     }
 
 
-async def call_agent(state: AgentState, config: RunnableConfig):
+async def call_remote_agent(state: AgentState, config: RunnableConfig, writer:StreamWriter):
     current_agent_name = state["active_agent"]
     card = assistant_cards[current_agent_name]
     agent_cli = A2AClient(agent_card=card, url=card.url)
@@ -126,31 +138,24 @@ async def call_agent(state: AgentState, config: RunnableConfig):
         "metadata": None
     })
 
-    #res: SendTaskResponse = await agent_cli.send_task(payload=params)
-    res: SendTaskResponse = await agent_cli.send_task(payload=params)
+    last_event = None
+    async for event in agent_cli.send_task_streaming(payload=params) :
+        last_event = event
+        message = SupervisorMessageChunk(content="".join([p.text for p in event.result.status.message.parts]))
+        if event.result.status.state == TaskState.WORKING:
+            writer(message)
 
-    response_messages = []
-    if res.result.status.message is not None:
-        for part in res.result.status.message.parts:
-            if part.type == "text":
-                response_messages.append(AIMessage(content=part.text, name=card.name))
-
-    if res.result.artifacts is not None:
-        for art in res.result.artifacts:
-            for part in art.parts:
-                if part.type == "text":
-                    response_messages.append(AIMessage(content=part.text, name=card.name))
 
     return {
-        "messages": state['messages'] + response_messages,
-        "action": res.result.status.state.value
+        "messages" : [AIMessage("".join([x.text for x in last_event.result.status.message.parts]))],
+        "action": last_event.result.status.state
     }
 
 
 graph = StateGraph(AgentState)
 graph.add_node("call_llm", call_llm)
-graph.add_node("call_agent", call_agent)
-graph.add_node("default_agent", default_agent)
+graph.add_node("call_agent", call_remote_agent)
+graph.add_node("default_agent", call_default_agent)
 graph.add_edge("call_agent", "call_llm")
 graph.add_edge("default_agent", "call_llm")
 

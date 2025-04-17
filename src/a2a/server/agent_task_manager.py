@@ -16,7 +16,7 @@ from agent_handoff.agent import HandoffAgent
 class AgentTaskManager(InMemoryTaskManager):
     def __init__(self, agent: BaseAgent, notification_sender_auth: PushNotificationSenderAuth):
         super().__init__()
-        self.agent = agent
+        self.agent : BaseAgent = agent
         self.notification_sender_auth = notification_sender_auth
 
     async def _run_streaming_agent(self, request: SendTaskStreamingRequest):

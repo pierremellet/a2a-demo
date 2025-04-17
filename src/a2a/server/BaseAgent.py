@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import AsyncIterable, Dict, Any
 
-from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.graph.graph import CompiledGraph
 
 from a2a.common.common import ResponseFormat
@@ -37,24 +36,40 @@ class BaseAgent(ABC):
         inputs = {"messages": [("user", query)]}
         config = {"configurable": {"thread_id": sessionId}}
 
-        for item in self.agent.stream(inputs, config, stream_mode="values"):
-            message = item["messages"][-1]
-            if (
-                    isinstance(message, AIMessage)
-                    and message.tool_calls
-                    and len(message.tool_calls) > 0
-            ):
-                yield {
-                    "is_task_complete": False,
-                    "require_user_input": False,
-                    "content": "Looking up the exchange rates...",
-                }
-            elif isinstance(message, ToolMessage):
-                yield {
-                    "is_task_complete": False,
-                    "require_user_input": False,
-                    "content": "Processing the exchange rates..",
-                }
+        buffer = ""
+        in_message_value = False
+
+        for event in self.agent.stream(inputs, config, stream_mode=["values", "messages"]):
+            type = event[0]
+            payload = event[1]
+
+            if type=="messages" :
+                buffer += payload[0].content
+
+                if '"message":"' in buffer and not in_message_value:
+                    buffer = buffer.split('"message":"', 1)[1]
+                    in_message_value = True
+
+                if in_message_value:
+                    # Divise le buffer à la fin de la valeur du message
+                    if '"' in buffer:
+                        message_value, remaining = buffer.split('"', 1)
+                        yield {
+                            "is_task_complete": False,
+                            "require_user_input": False,
+                            "content": message_value,
+                        }
+                        # Arrête si nous avons atteint la fin de la valeur du message
+                        break
+                    else:
+                        yield {
+                            "is_task_complete": False,
+                            "require_user_input": False,
+                            "content": buffer,
+                        }
+                        buffer = ""
+
+
 
         yield self.get_agent_response(config)
 
