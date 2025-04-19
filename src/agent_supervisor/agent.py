@@ -1,6 +1,7 @@
 import json
 from typing import Literal
 
+from langchain_core.callbacks import adispatch_custom_event
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
@@ -13,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from a2a.client.client import A2AClient
 from a2a.common.types import TaskSendParams, Message, TextPart, SendTaskResponse, AgentCard, TaskState, \
-    SendTaskStreamingResponse
+    SendTaskStreamingResponse, TaskStatusUpdateEvent, TaskArtifactUpdateEvent
 from a2a.utils.card_resolver import A2ACardResolver
 from agent_supervisor.model import AgentState
 
@@ -21,7 +22,10 @@ llm = ChatOpenAI(model="gpt-4o-mini")
 
 assistant_cards: dict[str, AgentCard] = {}
 
-for agent in [A2ACardResolver("http://localhost:9000").get_agent_card()]:
+for agent in [
+        #A2ACardResolver("http://localhost:9000").get_agent_card(),
+        A2ACardResolver("http://localhost:8000").get_agent_card()
+    ]:
     assistant_cards[agent.name] = agent
 
 
@@ -88,7 +92,7 @@ async def call_llm(state: AgentState) -> Command[Literal["__end__", "call_agent"
             )
 
         # Si aucun agent actif, on en recherche un par LLM
-        res = await (prompt | llm).ainvoke(state)
+        res = (prompt | llm).invoke(state)
 
         if res.content in ["coach", "handoff"]:
             return Command(
@@ -109,18 +113,59 @@ async def call_llm(state: AgentState) -> Command[Literal["__end__", "call_agent"
 
 async def call_default_agent(state: AgentState, writer:StreamWriter):
 
+    prompt = ChatPromptTemplate.from_messages([
+        ('system',"""
+            ## Contexte
+            Vous êtes un agent conversationnel spécialisé dans la gestion des demandes clients complexes ou spécifiques. Vous êtes sollicité lorsque les autres agents disponibles ne sont pas en mesure de fournir une réponse pertinente ou satisfaisante aux besoins du client.
+            
+            ## Objectif
+            Votre mission est de comprendre en profondeur la demande du client, de fournir des réponses précises et adaptées, et de garantir une expérience client exceptionnelle.
+            
+            ## Instructions
+            
+            1. **Accueil et Présentation**
+               - Commencez par accueillir chaleureusement le client.
+               - Présentez-vous brièvement et expliquez que vous êtes là pour l'aider avec sa demande spécifique.
+            
+            2. **Compréhension de la Demande**
+               - Posez des questions ouvertes pour bien comprendre la demande du client.
+               - Reformulez la demande pour vous assurer que vous avez bien compris.
+            
+            3. **Recherche d'Informations**
+               - Utilisez toutes les ressources à votre disposition pour trouver les informations nécessaires.
+               - Si nécessaire, consultez des experts ou des bases de données internes.
+            
+            4. **Réponse au Client**
+               - Fournissez une réponse claire, concise et précise.
+               - Utilisez un langage simple et compréhensible.
+               - Proposez des solutions alternatives si la demande initiale ne peut pas être satisfaite.
+            
+            5. **Suivi et Satisfaction**
+               - Demandez au client s'il est satisfait de la réponse fournie.
+               - Proposez de l'aider davantage si nécessaire.
+               - Remerciez le client pour sa patience et sa confiance.
+            
+       
+---
+        """),
+        MessagesPlaceholder("messages")
+    ])
+
     events : list[SupervisorMessageChunk] = []
-    async for event in llm.astream(state['messages'][-1].content):
+    for event in (prompt | llm).stream(state):
         message = SupervisorMessageChunk(content=event.content)
         events.append(message)
-        writer(message)
+        await adispatch_custom_event("custom", message.model_dump())
     return {
         "messages" : [AIMessage("".join([x.content for x in events]))],
         "action": TaskState.COMPLETED
     }
 
 
-async def call_remote_agent(state: AgentState, config: RunnableConfig, writer:StreamWriter):
+
+
+
+async def call_remote_agent(state: AgentState, writer:StreamWriter, config: RunnableConfig) :
     current_agent_name = state["active_agent"]
     card = assistant_cards[current_agent_name]
     agent_cli = A2AClient(agent_card=card, url=card.url)
@@ -138,19 +183,28 @@ async def call_remote_agent(state: AgentState, config: RunnableConfig, writer:St
         "metadata": None
     })
 
-    last_event = None
+    last_state = None
+
     async for event in agent_cli.send_task_streaming(payload=params) :
-        last_event = event
-        message = SupervisorMessageChunk(content="".join([p.text for p in event.result.status.message.parts]))
-        if event.result.status.state == TaskState.WORKING:
+
+        if isinstance(event.result, TaskStatusUpdateEvent) :
+            message = SupervisorMessageChunk(content="".join([p.text for p in event.result.status.message.parts]))
             writer(message)
+            await adispatch_custom_event("custom", message.model_dump())
+
+            last_state = event.result.status.state
+
+        if isinstance(event.result, TaskArtifactUpdateEvent):
+            message = SupervisorMessageChunk(content="".join([p.text for p in event.result.artifacts.parts]))
+            await adispatch_custom_event("custom", message.model_dump())
+
+
 
 
     return {
-        "messages" : [AIMessage("".join([x.text for x in last_event.result.status.message.parts]))],
-        "action": last_event.result.status.state
+        "action": last_state,
+        "messages" : [AIMessage("")]
     }
-
 
 graph = StateGraph(AgentState)
 graph.add_node("call_llm", call_llm)

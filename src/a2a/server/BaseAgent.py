@@ -39,7 +39,7 @@ class BaseAgent(ABC):
         buffer = ""
         in_message_value = False
 
-        for event in self.agent.stream(inputs, config, stream_mode=["values", "messages"]):
+        async for event in self.agent.astream(inputs, config, stream_mode=["values", "messages"]):
             type = event[0]
             payload = event[1]
 
