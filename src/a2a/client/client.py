@@ -36,7 +36,7 @@ class A2AClient:
         return SendTaskResponse(**await self._send_request(request))
 
     async def send_task_streaming(
-        self, payload: dict[str, Any]
+        self, payload: TaskSendParams
     ) -> AsyncIterable[SendTaskStreamingResponse]:
         request = SendTaskStreamingRequest(params=payload)
         with httpx.Client(timeout=None) as client:

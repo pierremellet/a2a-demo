@@ -1,4 +1,3 @@
-import json
 from typing import Literal
 
 from langchain_core.callbacks import adispatch_custom_event
@@ -13,19 +12,19 @@ from langgraph.types import Command, StreamWriter
 from pydantic import BaseModel, Field
 
 from a2a.client.client import A2AClient
-from a2a.common.types import TaskSendParams, Message, TextPart, SendTaskResponse, AgentCard, TaskState, \
-    SendTaskStreamingResponse, TaskStatusUpdateEvent, TaskArtifactUpdateEvent
+from a2a.common.types import TaskSendParams, Message, TextPart, SendTaskResponse, AgentCard, TaskState
 from a2a.utils.card_resolver import A2ACardResolver
 from agent_supervisor.model import AgentState
+from agent_supervisor.utils import convert_a2a_task_result_to_langchain, convert_a2a_task_event_to_langchain
 
 llm = ChatOpenAI(model="gpt-4o-mini")
 
 assistant_cards: dict[str, AgentCard] = {}
 
 for agent in [
-        #A2ACardResolver("http://localhost:9000").get_agent_card(),
-        A2ACardResolver("http://localhost:8000").get_agent_card()
-    ]:
+    # A2ACardResolver("http://localhost:9000").get_agent_card(),
+    A2ACardResolver("http://localhost:8000").get_agent_card()
+]:
     assistant_cards[agent.name] = agent
 
 
@@ -61,7 +60,7 @@ prompt = ChatPromptTemplate.from_messages([
 ])
 
 
-async def call_llm(state: AgentState) -> Command[Literal["__end__", "call_agent", "default_agent"]]:
+async def router(state: AgentState) -> Command[Literal["__end__", "call_agent", "default_agent"]]:
     # Si on rentre dans le router depuis un retour d'un agent
     if isinstance(state['messages'][-1], AIMessage):
 
@@ -69,7 +68,7 @@ async def call_llm(state: AgentState) -> Command[Literal["__end__", "call_agent"
             return Command(
                 goto=END,
                 update={
-                    "last_agent"  : state['active_agent']
+                    "last_agent": state['active_agent']
                 }
             )
 
@@ -78,7 +77,7 @@ async def call_llm(state: AgentState) -> Command[Literal["__end__", "call_agent"
                 goto=END,
                 update={
                     "active_agent": None,
-                    "last_agent"  : state['active_agent']
+                    "last_agent": state['active_agent']
                 }
             )
 
@@ -92,7 +91,7 @@ async def call_llm(state: AgentState) -> Command[Literal["__end__", "call_agent"
             )
 
         # Si aucun agent actif, on en recherche un par LLM
-        res = (prompt | llm).invoke(state)
+        res = await (prompt | llm).ainvoke(state)
 
         if res.content in ["coach", "handoff"]:
             return Command(
@@ -111,10 +110,9 @@ async def call_llm(state: AgentState) -> Command[Literal["__end__", "call_agent"
     )
 
 
-async def call_default_agent(state: AgentState, writer:StreamWriter):
-
+async def call_default_agent(state: AgentState, writer: StreamWriter):
     prompt = ChatPromptTemplate.from_messages([
-        ('system',"""
+        ('system', """
             ## Contexte
             Vous êtes un agent conversationnel spécialisé dans la gestion des demandes clients complexes ou spécifiques. Vous êtes sollicité lorsque les autres agents disponibles ne sont pas en mesure de fournir une réponse pertinente ou satisfaisante aux besoins du client.
             
@@ -151,21 +149,14 @@ async def call_default_agent(state: AgentState, writer:StreamWriter):
         MessagesPlaceholder("messages")
     ])
 
-    events : list[SupervisorMessageChunk] = []
-    for event in (prompt | llm).stream(state):
-        message = SupervisorMessageChunk(content=event.content)
-        events.append(message)
-        await adispatch_custom_event("custom", message.model_dump())
+    res = await (prompt | llm).ainvoke(state)
     return {
-        "messages" : [AIMessage("".join([x.content for x in events]))],
+        "messages": [res],
         "action": TaskState.COMPLETED
     }
 
 
-
-
-
-async def call_remote_agent(state: AgentState, writer:StreamWriter, config: RunnableConfig) :
+async def call_remote_agent(state: AgentState, config: RunnableConfig):
     current_agent_name = state["active_agent"]
     card = assistant_cards[current_agent_name]
     agent_cli = A2AClient(agent_card=card, url=card.url)
@@ -185,34 +176,33 @@ async def call_remote_agent(state: AgentState, writer:StreamWriter, config: Runn
 
     last_state = None
 
-    async for event in agent_cli.send_task_streaming(payload=params) :
+    if card.capabilities.streaming:
+        lc_messages : list[BaseMessage] = []
+        async for event in agent_cli.send_task_streaming(payload=params):
+            lc_messages += convert_a2a_task_event_to_langchain(event.result)
 
-        if isinstance(event.result, TaskStatusUpdateEvent) :
-            message = SupervisorMessageChunk(content="".join([p.text for p in event.result.status.message.parts]))
-            writer(message)
-            await adispatch_custom_event("custom", message.model_dump())
+        return {
+            "action": lc_messages[-1].response_metadata['state'],
+            "messages": lc_messages
+        }
 
-            last_state = event.result.status.state
+    else:
 
-        if isinstance(event.result, TaskArtifactUpdateEvent):
-            message = SupervisorMessageChunk(content="".join([p.text for p in event.result.artifacts.parts]))
-            await adispatch_custom_event("custom", message.model_dump())
+        res: SendTaskResponse = await agent_cli.send_task(payload=params)
+        lc_messages = convert_a2a_task_result_to_langchain(res.result)
+        return {
+            "action": res.result.status.state,
+            "messages": lc_messages
+        }
 
-
-
-
-    return {
-        "action": last_state,
-        "messages" : [AIMessage("")]
-    }
 
 graph = StateGraph(AgentState)
-graph.add_node("call_llm", call_llm)
+graph.add_node("call_llm", router)
 graph.add_node("call_agent", call_remote_agent)
 graph.add_node("default_agent", call_default_agent)
 graph.add_edge("call_agent", "call_llm")
 graph.add_edge("default_agent", "call_llm")
-
 graph.set_entry_point("call_llm")
+graph.set_finish_point("call_llm")
 
-agent = graph.compile(checkpointer=MemorySaver())
+agent = graph.compile(checkpointer=MemorySaver(), debug=False)

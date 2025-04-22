@@ -24,7 +24,7 @@ class AgentTaskManager(InMemoryTaskManager):
         query = self._get_user_query(task_send_params)
 
         try:
-            async for item in self.agent.stream(query, task_send_params.sessionId):
+            async for item in self.agent.async_stream(query, task_send_params.sessionId):
                 is_task_complete = item["is_task_complete"]
                 require_user_input = item["require_user_input"]
                 artifact = None
@@ -114,7 +114,7 @@ class AgentTaskManager(InMemoryTaskManager):
         task_send_params: TaskSendParams = request.params
         query = self._get_user_query(task_send_params)
         try:
-            agent_response = self.agent.invoke(query, task_send_params.sessionId)
+            agent_response = await self.agent.async_invoke(query, task_send_params.sessionId)
         except Exception as e:
             logger.error(f"Error invoking agent: {e}")
             raise ValueError(f"Error invoking agent: {e}")
