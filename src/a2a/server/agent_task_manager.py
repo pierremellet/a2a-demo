@@ -2,8 +2,9 @@ import asyncio
 import traceback
 from typing import Union, AsyncIterable
 
-from a2a.server import BaseAgent
+from a2a.server import base_agent
 from a2a.common.common import are_modalities_compatible, new_incompatible_types_error
+from a2a.server.base_agent import BaseAgent
 from a2a.server.server import logger
 from a2a.server.task_manager import InMemoryTaskManager
 from a2a.common.types import SendTaskStreamingRequest, TaskSendParams, TaskState, Message, Artifact, TaskStatus, \

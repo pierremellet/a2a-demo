@@ -2,10 +2,8 @@ from abc import ABC, abstractmethod
 from typing import AsyncIterable, Dict, Any
 
 from langgraph.graph.graph import CompiledGraph
-
 from a2a.common.common import ResponseFormat
 from a2a.common.types import AgentSkill, AgentCard, AgentCapabilities
-
 
 class BaseAgent(ABC):
 
@@ -13,7 +11,7 @@ class BaseAgent(ABC):
         self._agent = None
 
     @abstractmethod
-    def get_agent_capabilites(self) -> AgentCapabilities :
+    def get_agent_capabilities(self) -> AgentCapabilities :
         raise NotImplemented()
 
     @abstractmethod
@@ -97,4 +95,3 @@ class BaseAgent(ABC):
                             "content": buffer,
                         }
                         buffer = ""
-

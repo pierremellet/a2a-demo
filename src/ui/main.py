@@ -26,8 +26,8 @@ async def main():
             event_type = event[0]
             payload = event[1]
 
-            if event_type == "messages":
-                print(payload[0].content, end="")
+            if event_type == "custom":
+                print(payload, end="")
 
         # Afficher l'état de l'agent
         agent_state = agent.get_state(config)

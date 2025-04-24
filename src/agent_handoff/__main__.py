@@ -1,6 +1,6 @@
 from dotenv import load_dotenv
 
-from a2a.server.BaseAgent import BaseAgent
+from a2a.server.base_agent import BaseAgent
 from a2a.server.server import A2AServer
 from a2a.server.task_manager import logger
 from a2a.utils.push_notification_auth import PushNotificationSenderAuth

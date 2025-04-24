@@ -4,7 +4,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import StateGraph
 
-from a2a.server.BaseAgent import BaseAgent
+from a2a.server.base_agent import BaseAgent
 from a2a.common.common import ResponseFormat
 from a2a.common.types import AgentSkill, AgentCard, AgentCapabilities
 from agent_handoff.state import AgentState
@@ -51,7 +51,7 @@ class HandoffAgent(BaseAgent):
 
         self.set_agent(graph.compile(checkpointer=MemorySaver()))
 
-    def get_agent_capabilites(self) -> AgentCapabilities:
+    def get_agent_capabilities(self) -> AgentCapabilities:
         return AgentCapabilities(streaming=True, pushNotifications=True)
 
     def get_agent_card(self) -> AgentCard:
@@ -62,7 +62,7 @@ class HandoffAgent(BaseAgent):
             version="1.0.0",
             defaultInputModes=HandoffAgent.SUPPORTED_CONTENT_TYPES,
             defaultOutputModes=HandoffAgent.SUPPORTED_CONTENT_TYPES,
-            capabilities=self.get_agent_capabilites(),
+            capabilities=self.get_agent_capabilities(),
             skills=self.get_agent_skills(),
         )
 

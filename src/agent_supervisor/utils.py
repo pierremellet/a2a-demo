@@ -5,29 +5,24 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from a2a.common.types import Task, TaskArtifactUpdateEvent, TaskStatusUpdateEvent
 
 
-def convert_a2a_task_event_to_langchain(event : Union[TaskArtifactUpdateEvent, TaskStatusUpdateEvent]) -> list[AIMessageChunk]:
-    messages : list[AIMessageChunk] = []
+def convert_a2a_task_events_to_langchain(events :  list[Union[TaskStatusUpdateEvent, TaskArtifactUpdateEvent]]) -> AIMessage:
 
-    if isinstance(event, TaskStatusUpdateEvent):
-        if event.status.message.parts is not None:
-            for part in event.status.message.parts:
-                msg = AIMessageChunk(content = "a"+part.text, response_metadata={
-                    "state" : event.status.state,
-                    "a2a_meta" : event.metadata
-                })
-                messages.append(msg)
+    content = ""
+
+    for event in events :
+        if isinstance(event, TaskStatusUpdateEvent):
+            if event.status.message.parts is not None:
+                for part in event.status.message.parts:
+                    content += part.text
 
 
-    if isinstance(event, TaskArtifactUpdateEvent):
-        if event.artifact is not None :
-            if event.artifact.parts is not None:
-                for part in event.artifact.parts:
-                    msg = AIMessageChunk(content=part.text, response_metadata={
-                        "a2a_meta": event.metadata
-                    })
-                    messages.append(msg)
+        if isinstance(event, TaskArtifactUpdateEvent):
+            if event.artifact is not None :
+                if event.artifact.parts is not None:
+                    for part in event.artifact.parts:
+                        content += part.text
 
-    return messages
+    return AIMessage(content=content)
 
 
 def convert_a2a_task_result_to_langchain(task: Task) -> list[AIMessage]:
