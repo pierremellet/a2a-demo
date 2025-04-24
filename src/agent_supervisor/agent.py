@@ -1,3 +1,5 @@
+import json
+import uuid
 from typing import Literal
 
 from langchain_core.callbacks import adispatch_custom_event
@@ -64,7 +66,7 @@ async def router(state: AgentState) -> Command[Literal["__end__", "call_agent", 
     # Si on rentre dans le router depuis un retour d'un agent
     if isinstance(state['messages'][-1], AIMessage):
 
-        if 'action' in state and state['action'] == TaskState.INPUT_REQUIRED:
+        if 'task_state' in state and state['task_state'] == TaskState.INPUT_REQUIRED:
             return Command(
                 goto=END,
                 update={
@@ -72,7 +74,7 @@ async def router(state: AgentState) -> Command[Literal["__end__", "call_agent", 
                 }
             )
 
-        if 'action' in state and state['action'] == TaskState.COMPLETED:
+        if 'task_state' in state and state['task_state'] == TaskState.WORKING:
             return Command(
                 goto=END,
                 update={
@@ -80,6 +82,17 @@ async def router(state: AgentState) -> Command[Literal["__end__", "call_agent", 
                     "last_agent": state['active_agent']
                 }
             )
+
+        if 'task_state' in state and state['task_state'] == TaskState.COMPLETED:
+            return Command(
+                goto=END,
+                update={
+                    "active_agent": None,
+                    "last_agent": state['active_agent']
+                }
+            )
+
+        raise Exception(state)
 
     # Si on rentre dans le router depuis une réponse humaine
     if isinstance(state['messages'][-1], HumanMessage):
@@ -111,6 +124,8 @@ async def router(state: AgentState) -> Command[Literal["__end__", "call_agent", 
 
 
 async def call_default_agent(state: AgentState, writer: StreamWriter):
+
+    print(":( :( :( ")
     prompt = ChatPromptTemplate.from_messages([
         ('system', """
             ## Contexte
@@ -142,9 +157,7 @@ async def call_default_agent(state: AgentState, writer: StreamWriter):
                - Demandez au client s'il est satisfait de la réponse fournie.
                - Proposez de l'aider davantage si nécessaire.
                - Remerciez le client pour sa patience et sa confiance.
-            
-       
----
+
         """),
         MessagesPlaceholder("messages")
     ])
@@ -166,7 +179,7 @@ async def call_remote_agent(state: AgentState, config: RunnableConfig):
     parts.append(TextPart(text=messages[-1].content))
 
     params: TaskSendParams = TaskSendParams.model_validate({
-        "id": config['configurable']['thread_id'],
+        "id": state["task_id"] if "task_id" in state and state["task_id"] is not None else str(uuid.uuid4()),
         "sessionId": config['configurable']['thread_id'],
         "message": Message(role="user", parts=parts, metadata=None),
         "pushNotification": None,
@@ -174,16 +187,19 @@ async def call_remote_agent(state: AgentState, config: RunnableConfig):
         "metadata": None
     })
 
-    last_state = None
 
     if card.capabilities.streaming:
         lc_messages : list[BaseMessage] = []
+        last_state = None
         async for event in agent_cli.send_task_streaming(payload=params):
+            last_state = event.result.status.state
             lc_messages += convert_a2a_task_event_to_langchain(event.result)
 
+
         return {
-            "action": lc_messages[-1].response_metadata['state'],
-            "messages": lc_messages
+            "task_state": last_state,
+            "messages": lc_messages,
+            "task_id": params.id
         }
 
     else:
@@ -191,18 +207,19 @@ async def call_remote_agent(state: AgentState, config: RunnableConfig):
         res: SendTaskResponse = await agent_cli.send_task(payload=params)
         lc_messages = convert_a2a_task_result_to_langchain(res.result)
         return {
-            "action": res.result.status.state,
-            "messages": lc_messages
+            "task_state": res.result.status.state,
+            "messages": lc_messages,
+            "task_id": params.id
         }
 
 
 graph = StateGraph(AgentState)
-graph.add_node("call_llm", router)
+graph.add_node("router", router)
 graph.add_node("call_agent", call_remote_agent)
 graph.add_node("default_agent", call_default_agent)
-graph.add_edge("call_agent", "call_llm")
-graph.add_edge("default_agent", "call_llm")
-graph.set_entry_point("call_llm")
-graph.set_finish_point("call_llm")
+graph.add_edge("call_agent", "router")
+graph.add_edge("default_agent", "router")
+graph.set_entry_point("router")
+graph.set_finish_point("router")
 
 agent = graph.compile(checkpointer=MemorySaver(), debug=False)

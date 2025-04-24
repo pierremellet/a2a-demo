@@ -43,11 +43,34 @@ class BaseAgent(ABC):
             type = event[0]
             payload = event[1]
 
-            if type=="updates":
-                print(payload)
+            if type == "values" and "structured_response" in payload:
+                structured_response = payload["structured_response"]
+                if structured_response and isinstance(structured_response, ResponseFormat):
+                    if structured_response.status == "input_required":
+                        yield {
+                            "is_task_complete": False,
+                            "require_user_input": True,
+                            "content": structured_response.message
+                        }
+                    elif structured_response.status == "error":
+                        yield {
+                            "is_task_complete": False,
+                            "require_user_input": True,
+                            "content": structured_response.message
+                        }
+                    elif structured_response.status == "completed":
+                        yield {
+                            "is_task_complete": True,
+                            "require_user_input": False,
+                            "content": structured_response.message
+                        }
 
-            if type=="values":
-                print(payload)
+                yield {
+                    "is_task_complete": False,
+                    "require_user_input": True,
+                    "content": "We are unable to process your request at the moment. Please try again.",
+            }
+
 
             if type=="messages" :
                 buffer += payload[0].content
@@ -66,7 +89,7 @@ class BaseAgent(ABC):
                             "content": message_value,
                         }
                         # Arrête si nous avons atteint la fin de la valeur du message
-                        break
+                        #break
                     else:
                         yield {
                             "is_task_complete": False,
@@ -75,33 +98,3 @@ class BaseAgent(ABC):
                         }
                         buffer = ""
 
-        yield self.get_agent_response(config)
-
-    def get_agent_response(self, config):
-        current_state = self._agent.get_state(config)
-        structured_response = current_state.values.get('structured_response')
-        if structured_response and isinstance(structured_response, ResponseFormat):
-            if structured_response.status == "input_required":
-                return {
-                    "is_task_complete": False,
-                    "require_user_input": True,
-                    "content": structured_response.message
-                }
-            elif structured_response.status == "error":
-                return {
-                    "is_task_complete": False,
-                    "require_user_input": True,
-                    "content": structured_response.message
-                }
-            elif structured_response.status == "completed":
-                return {
-                    "is_task_complete": True,
-                    "require_user_input": False,
-                    "content": structured_response.message
-                }
-
-        return {
-            "is_task_complete": False,
-            "require_user_input": True,
-            "content": "We are unable to process your request at the moment. Please try again.",
-        }

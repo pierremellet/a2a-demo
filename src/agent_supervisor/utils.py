@@ -11,7 +11,7 @@ def convert_a2a_task_event_to_langchain(event : Union[TaskArtifactUpdateEvent, T
     if isinstance(event, TaskStatusUpdateEvent):
         if event.status.message.parts is not None:
             for part in event.status.message.parts:
-                msg = AIMessageChunk(content = part.text, response_metadata={
+                msg = AIMessageChunk(content = "a"+part.text, response_metadata={
                     "state" : event.status.state,
                     "a2a_meta" : event.metadata
                 })
@@ -23,7 +23,6 @@ def convert_a2a_task_event_to_langchain(event : Union[TaskArtifactUpdateEvent, T
             if event.artifact.parts is not None:
                 for part in event.artifact.parts:
                     msg = AIMessageChunk(content=part.text, response_metadata={
-                        "state": event.status.state,
                         "a2a_meta": event.metadata
                     })
                     messages.append(msg)
