@@ -4,6 +4,8 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 
 from a2a.common.types import Task, TaskArtifactUpdateEvent, TaskStatusUpdateEvent
 
+class QueueEndEvent:
+    pass
 
 def convert_a2a_task_events_to_langchain(events :  list[Union[TaskStatusUpdateEvent, TaskArtifactUpdateEvent]]) -> AIMessage:
 

@@ -1,7 +1,10 @@
+import asyncio
 import json
 import uuid
+from asyncio import QueueEmpty
 from typing import Literal, Union
 
+from kombu.transport.sqlalchemy.models import Queue
 from langchain_core.callbacks import adispatch_custom_event
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -18,7 +21,8 @@ from a2a.common.types import TaskSendParams, Message, TextPart, SendTaskResponse
     TaskStatusUpdateEvent, TaskArtifactUpdateEvent
 from a2a.utils.card_resolver import A2ACardResolver
 from agent_supervisor.model import AgentState
-from agent_supervisor.utils import convert_a2a_task_result_to_langchain, convert_a2a_task_events_to_langchain
+from agent_supervisor.utils import convert_a2a_task_result_to_langchain, convert_a2a_task_events_to_langchain, \
+    QueueEndEvent
 
 # Initialize the LLM model
 llm = ChatOpenAI(model="gpt-4o-mini")
@@ -162,12 +166,34 @@ async def call_remote_agent(state: AgentState, config: RunnableConfig, writer: S
     if card.capabilities.streaming:
         last_state = None
         buffer : list[Union[TaskStatusUpdateEvent, TaskArtifactUpdateEvent]] = []
-        async for event in agent_cli.send_task_streaming(payload=params):
-            buffer.append(event.result)
-            if isinstance(event.result, TaskStatusUpdateEvent):
-                writer(event.result.status.message.parts[0].text)
+        queue = asyncio.Queue(maxsize=0)
 
-            last_state = event.result.status.state
+        async def next_message(q):
+            async for event in agent_cli.send_task_streaming(payload=params):
+                buffer.append(event.result)
+                if isinstance(event.result, TaskStatusUpdateEvent) and event.result.status.state == TaskState.WORKING:
+                    #writer(event.result.status.message.parts[0].text)
+                    await q.put(event.result)
+
+            await q.put(QueueEndEvent())
+
+        asyncio.create_task(next_message(queue))
+
+        while True :
+            event : Union[TaskStatusUpdateEvent, TaskArtifactUpdateEvent, QueueEndEvent] = await queue.get()
+            print(isinstance(event, QueueEndEvent))
+            if isinstance(event, QueueEndEvent):
+                break
+
+            buffer.append(event)
+            if isinstance(event, TaskStatusUpdateEvent) and event.status.state == TaskState.WORKING:
+                for part in event.status.message.parts:
+                    writer(part.text)
+
+
+
+
+        last_state = buffer[-1].status.state
 
         ai_message = convert_a2a_task_events_to_langchain(buffer)
 

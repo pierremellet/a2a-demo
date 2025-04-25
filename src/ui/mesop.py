@@ -1,6 +1,7 @@
+import json
 import uuid
 from dataclasses import field, dataclass
-from typing import AsyncGenerator, Literal
+from typing import AsyncGenerator, Literal, Union
 
 from dotenv import load_dotenv
 
@@ -43,7 +44,7 @@ _STYLE_APP_CONTAINER = me.Style(
     padding=me.Padding(top=20, left=20, right=20),
 )
 _STYLE_TITLE = me.Style(
-    padding=me.Padding(bottom=0),
+    padding=me.Padding(bottom=5),
     font_size="2rem"
 )
 
@@ -70,7 +71,10 @@ _STYLE_CHAT_BUBBLE_NAME = me.Style(
     font_size="13px",
     padding=me.Padding(left=15, right=15, bottom=5),
 )
-_STYLE_CHAT_BUBBLE_PLAINTEXT = me.Style(margin=me.Margin.symmetric(vertical=15))
+_STYLE_CHAT_BUBBLE_PLAINTEXT = me.Style(
+    margin=me.Margin.symmetric(vertical=15),
+    font_weight="bold"
+)
 
 run_config: RunnableConfig
 
@@ -95,14 +99,13 @@ class State:
     input: str = ""
     messages: list[ChatMessage] = field(default_factory=list)
     in_progress: bool = False
+    agent_state: dict = field(default_factory=dict)
 
 
 @me.page(
-    security_policy=me.SecurityPolicy(
-        allowed_iframe_parents=["https://mesop-dev.github.io"]
-    ),
+    security_policy=me.SecurityPolicy(),
     path="/",
-    title="Mesop Demo Chat",
+    title="A2A Demo Chat",
     on_load=on_load
 )
 def page():
@@ -110,7 +113,27 @@ def page():
         me.text("Assistant", style=_STYLE_TITLE)
         chat()
         input_text()
+        state()
 
+
+def state():
+    ui_state = me.state(State)
+    with me.expansion_panel(
+            key="state",
+            title="Agent state",
+            description="...",
+            icon="database",
+            disabled=False,
+            hide_toggle=False,
+    ):
+        str_state = ""
+        for item in ui_state.agent_state:
+            if isinstance(ui_state.agent_state[item], str) or ui_state.agent_state[item] is None:
+                str_state += f"- **{item}** : {ui_state.agent_state[item]} \n"
+            if isinstance(ui_state.agent_state[item], list) :
+                str_state += f"- **{item}** : \n\t- size : {len(ui_state.agent_state[item])} \n\t- last message : {ui_state.agent_state[item][-1].content} \n"
+
+        me.markdown(str_state)
 
 def _make_style_chat_bubble_wrapper(role):
     align_items = "end" if role == _ROLE_USER else "start"
@@ -119,7 +142,6 @@ def _make_style_chat_bubble_wrapper(role):
         flex_direction="column",
         align_items=align_items,
     )
-
 
 def _make_chat_bubble_style(role) -> me.Style:
     """Generates styles for chat bubble.
@@ -146,12 +168,11 @@ def _make_chat_bubble_style(role) -> me.Style:
         ),
     )
 
-
 def chat():
-    state = me.state(State)
+    ui_state = me.state(State)
 
     with me.box(style=_STYLE_CHAT_BOX):
-        for msg in state.messages:
+        for msg in ui_state.messages:
             with me.box(style=_make_style_chat_bubble_wrapper(msg.type)):
                 with me.box(style=_make_chat_bubble_style(msg.type)):
                     if msg.type == "ai":
@@ -161,35 +182,45 @@ def chat():
                     if msg.type == "human":
                         me.text("Human", style=_STYLE_CHAT_BUBBLE_PLAINTEXT)
                         me.markdown(msg.message)
-        if state.in_progress:
-            with me.box(key="scroll-to", style=me.Style(height=0)):
-                pass
 
 
 async def on_input_enter(action: me.InputEnterEvent):
-    state = me.state(State)
-    state.input = action.value
+    ui_state = me.state(State)
+    ui_state.input = action.value
 
-    if state.messages is None:
-        state.messages = []
+    if ui_state.messages is None:
+        ui_state.messages = []
+
     hm = ChatMessage()
     hm.type = "human"
-    hm.message = state.input
-    state.messages.append(hm)
+    hm.message = ui_state.input
+    ui_state.messages.append(hm)
     yield
 
     cm = ChatMessage()
     cm.type = "ai"
     cm.message = ""
-    state.messages.append(cm)
-    state.in_progress = True
-    async for event, agent in transform(state.input):
-        cm.message += event
-        cm.active_agent = agent
-        me.scroll_into_view(key="scroll-to")
-        yield
-    state.in_progress = False
+    ui_state.messages.append(cm)
+    ui_state.in_progress = True
 
+
+    async for event, agentname in transform(ui_state.input):
+        cm.message += event
+        cm.active_agent = agentname
+        yield
+
+
+    agent_state = {}
+    lg_state = agent.get_state(config=run_config).values
+    for key in lg_state:
+        if isinstance(lg_state[key], str) or lg_state[key] is None:
+            agent_state[key] = lg_state[key]
+
+    ui_state.agent_state = agent_state
+    yield
+
+    ui_state.in_progress = False
+    yield
 
 def input_text():
     with me.box():
@@ -202,10 +233,11 @@ def input_text():
 
 
 async def transform(user_msg: str) -> AsyncGenerator[tuple[str, str], None]:
+
     async for event in agent.astream(
             {"messages": [HumanMessage(content=user_msg)]},
             config=run_config,
-            stream_mode=["messages", "custom"]):
+            stream_mode=["custom"]):
 
         event_type = event[0]
         payload = event[1]
@@ -215,3 +247,9 @@ async def transform(user_msg: str) -> AsyncGenerator[tuple[str, str], None]:
                 if "active_agent" in agent.get_state(config=run_config).values else ""
 
             yield payload[0].content, active_agent
+
+        if event_type == "custom":
+
+            active_agent = agent.get_state(config=run_config).values["active_agent"] \
+                if "active_agent" in agent.get_state(config=run_config).values else ""
+            yield payload, active_agent
