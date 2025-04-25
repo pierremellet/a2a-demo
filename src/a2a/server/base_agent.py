@@ -27,11 +27,14 @@ class BaseAgent(ABC):
 
     async def async_invoke(self, query, sessionId) -> Dict[str, Any]:
         config = {"configurable": {"thread_id": sessionId}}
-        await self._agent.ainvoke({"messages": [("user", query)]}, config)
+        await self._agent.ainvoke({"messages": [("human", query)]}, config)
         return self.get_agent_response(config)
 
     async def async_stream(self, query, sessionId) -> AsyncIterable[Dict[str, Any]]:
-        inputs = {"messages": [("user", query)]}
+        inputs = {
+                "messages":[("human", query)],
+                "structured_response" : None
+        }
         config = {"configurable": {"thread_id": sessionId}}
 
         buffer = ""
@@ -41,7 +44,7 @@ class BaseAgent(ABC):
             type = event[0]
             payload = event[1]
 
-            if type == "values" and "structured_response" in payload:
+            if type == "values" and "structured_response" in payload and payload["structured_response"] is not None:
                 structured_response = payload["structured_response"]
                 if structured_response and isinstance(structured_response, ResponseFormat):
                     if structured_response.status == "input_required":
@@ -95,3 +98,32 @@ class BaseAgent(ABC):
                             "content": buffer,
                         }
                         buffer = ""
+
+    def get_agent_response(self, config):
+        current_state = self._agent.get_state(config)
+        structured_response = current_state.values.get('structured_response')
+        if structured_response and isinstance(structured_response, ResponseFormat):
+            if structured_response.status == "input_required":
+                return {
+                    "is_task_complete": False,
+                    "require_user_input": True,
+                    "content": structured_response.message
+                }
+            elif structured_response.status == "error":
+                return {
+                    "is_task_complete": False,
+                    "require_user_input": True,
+                    "content": structured_response.message
+                }
+            elif structured_response.status == "completed":
+                return {
+                    "is_task_complete": True,
+                    "require_user_input": False,
+                    "content": structured_response.message
+                }
+
+        return {
+            "is_task_complete": False,
+            "require_user_input": True,
+            "content": "We are unable to process your request at the moment. Please try again.",
+        }

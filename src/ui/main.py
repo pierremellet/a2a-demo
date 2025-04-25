@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 # Charger les variables d'environnement
 load_dotenv()
 
-from agent_supervisor.agent import agent
+from agent_supervisor.agent import supervisor_agent
 
 
 async def main():
@@ -21,8 +21,8 @@ async def main():
         user_msg = input("User: ")
         print("\nAI: ", end="")
 
-        async for event in agent.astream({"messages": [HumanMessage(content=user_msg)]}, config=run_config,
-                                         stream_mode=["messages", "custom"]):
+        async for event in supervisor_agent.astream({"messages": [HumanMessage(content=user_msg)]}, config=run_config,
+                                                    stream_mode=["messages", "custom"]):
             event_type = event[0]
             payload = event[1]
 
@@ -30,7 +30,7 @@ async def main():
                 print(payload, end="")
 
         # Afficher l'état de l'agent
-        agent_state = agent.get_state(config)
+        agent_state = supervisor_agent.get_state(config)
         print(f"\n(Agent: {agent_state.values['last_agent']})\n")
 
 

@@ -1,4 +1,4 @@
-from typing import Union
+from typing import Union, TypedDict
 
 from langchain_core.messages import AIMessage, AIMessageChunk
 
@@ -7,15 +7,23 @@ from a2a.common.types import Task, TaskArtifactUpdateEvent, TaskStatusUpdateEven
 class QueueEndEvent:
     pass
 
+
+class MessageEvent(TypedDict):
+    content : str
+    id : str
+    agent : str
+
+
 def convert_a2a_task_events_to_langchain(events :  list[Union[TaskStatusUpdateEvent, TaskArtifactUpdateEvent]]) -> AIMessage:
 
     content = ""
 
     for event in events :
         if isinstance(event, TaskStatusUpdateEvent):
-            if event.status.message.parts is not None:
-                for part in event.status.message.parts:
-                    content += part.text
+            if "message" in event.status :
+                if "parts" in event.status.message and event.status.message.parts is not None:
+                    for part in event.status.message.parts:
+                        content += part.text
 
 
         if isinstance(event, TaskArtifactUpdateEvent):

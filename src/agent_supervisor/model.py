@@ -10,3 +10,5 @@ class AgentState(MessagesState):
     task_id:  Annotated[Union[str, None], "L'identifiant de la tâche A2A en cours"]
     task_state:  Annotated[Union[TaskState, None], "Last task state"]
     last_agent: Annotated[Union[str, None], "Le dernière agent utilisé"]
+    auto_routed : Annotated[Union[bool, None], "vrai si l'agent est utilisé en chainage d'un autre agent"]
+

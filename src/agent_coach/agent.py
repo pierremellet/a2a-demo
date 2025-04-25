@@ -26,7 +26,7 @@ class CoachAgent(BaseAgent):
                     en tenant compte de leur situation financière unique, de leurs objectifs et de leur tolérance au risque.
                     
                     Retourne le status "input_required" : si tu as besoin d'informations complémentaires du client.
-                    Retourne le status "completed" : si tu considère ta tâche comme  ou que tu n'as pas besoin d'informations complémentaires du client.
+                    Retourne le status "completed" : si tu considère ta tâche comme terminée, ou la demande comme hors sujet ou que tu n'as pas besoin d'informations complémentaires du client.
                     
                     # Directives Générales :
                     

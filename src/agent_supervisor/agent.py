@@ -1,12 +1,9 @@
 import asyncio
-import json
+import logging
 import uuid
-from asyncio import QueueEmpty
 from typing import Literal, Union
 
-from kombu.transport.sqlalchemy.models import Queue
-from langchain_core.callbacks import adispatch_custom_event
-from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
@@ -17,12 +14,15 @@ from langgraph.types import Command, StreamWriter
 from pydantic import BaseModel, Field
 
 from a2a.client.client import A2AClient
-from a2a.common.types import TaskSendParams, Message, TextPart, SendTaskResponse, AgentCard, TaskState, \
+from a2a.common.types import TaskSendParams, Message, TextPart, TaskState, \
     TaskStatusUpdateEvent, TaskArtifactUpdateEvent
 from a2a.utils.card_resolver import A2ACardResolver
+from agent_supervisor.logger import StdoutLogger
 from agent_supervisor.model import AgentState
 from agent_supervisor.utils import convert_a2a_task_result_to_langchain, convert_a2a_task_events_to_langchain, \
-    QueueEndEvent
+    QueueEndEvent, MessageEvent
+
+logger = StdoutLogger(name="MonLogger", level=logging.DEBUG)
 
 # Initialize the LLM model
 llm = ChatOpenAI(model="gpt-4o-mini")
@@ -31,12 +31,15 @@ llm = ChatOpenAI(model="gpt-4o-mini")
 assistant_cards = {
     agent.name: agent
     for agent in [
+        A2ACardResolver("http://localhost:9000").get_agent_card(),
         A2ACardResolver("http://localhost:8000").get_agent_card()
     ]
 }
 
+
 class SupervisorMessageChunk(BaseModel):
     content: str = Field(description="Message payload")
+
 
 # Define the routing prompt
 ROUTING_PROMPT = """
@@ -103,30 +106,59 @@ default_agent_prompt_template = ChatPromptTemplate.from_messages([
     MessagesPlaceholder("messages")
 ])
 
+
 async def router(state: AgentState) -> Command[Literal["__end__", "call_agent", "default_agent"]]:
     last_message = state['messages'][-1]
 
     if isinstance(last_message, AIMessage):
         task_state = state.get('task_state')
-        if task_state in [TaskState.INPUT_REQUIRED, TaskState.WORKING, TaskState.COMPLETED]:
+        if task_state in [TaskState.INPUT_REQUIRED, TaskState.WORKING]:
+            logger.info(f"Route from {state['active_agent']} to END ")
             return Command(
                 goto=END,
                 update={
+                    "auto_routed": False,
                     "last_agent": state['active_agent'],
                     "active_agent": None if task_state != TaskState.INPUT_REQUIRED else state['active_agent']
                 }
             )
 
+        if task_state in [TaskState.COMPLETED]:
+
+            # Eval if need another agent or END
+            if "auto_routed" not in state or state["auto_routed"] != True :
+                res = await (routing_prompt_template | llm).ainvoke(state)
+                agent_name = res.content
+                if agent_name in ["coach", "handoff"]:
+                    logger.info(f"Route from humain input to agent : {agent_name} ")
+                    return Command(
+                        goto="call_agent",
+                        update={"active_agent": agent_name, "auto_routed":True}
+                    )
+
+            return Command(
+                goto=END,
+                update={
+                    "auto_routed": False,
+                    "last_agent": state['active_agent'],
+                    "active_agent": None if task_state != TaskState.INPUT_REQUIRED else state['active_agent']
+                }
+            )
+
+        logger.info(f"Task state from {state['active_agent']} is not valide : {task_state} ")
+
         raise Exception(state)
 
     if isinstance(last_message, HumanMessage):
         if state.get('active_agent'):
+            logger.info(f"Route from humain input to active agent : {state.get('active_agent')} ")
             return Command(goto="call_agent")
 
         res = await (routing_prompt_template | llm).ainvoke(state)
         agent_name = res.content
 
         if agent_name in ["coach", "handoff"]:
+            logger.info(f"Route from humain input to agent : {agent_name} ")
             return Command(
                 goto="call_agent",
                 update={"active_agent": agent_name}
@@ -137,16 +169,23 @@ async def router(state: AgentState) -> Command[Literal["__end__", "call_agent", 
         update={"active_agent": "default"}
     )
 
+
 async def call_default_agent(state: AgentState, writer: StreamWriter):
     buffer = ""
     async for event in (default_agent_prompt_template | llm).astream(state):
         buffer += event.content
-        writer(event.content)
+        ui_event = MessageEvent(
+            content=event.content,
+            id=event.id,
+            agent=state["active_agent"]
+        )
+        writer(ui_event)
 
     return {
         "messages": [AIMessage(buffer)],
         "task_state": TaskState.COMPLETED
     }
+
 
 async def call_remote_agent(state: AgentState, config: RunnableConfig, writer: StreamWriter):
     current_agent_name = state["active_agent"]
@@ -164,38 +203,38 @@ async def call_remote_agent(state: AgentState, config: RunnableConfig, writer: S
     )
 
     if card.capabilities.streaming:
-        last_state = None
-        buffer : list[Union[TaskStatusUpdateEvent, TaskArtifactUpdateEvent]] = []
+
+        logger.info(f"Call remote agent {current_agent_name} in streaming mode")
+        buffer: list[Union[TaskStatusUpdateEvent, TaskArtifactUpdateEvent]] = []
         queue = asyncio.Queue(maxsize=0)
 
         async def next_message(q):
             async for event in agent_cli.send_task_streaming(payload=params):
-                buffer.append(event.result)
-                if isinstance(event.result, TaskStatusUpdateEvent) and event.result.status.state == TaskState.WORKING:
-                    #writer(event.result.status.message.parts[0].text)
-                    await q.put(event.result)
-
+                await q.put(event.result)
             await q.put(QueueEndEvent())
 
         asyncio.create_task(next_message(queue))
 
-        while True :
-            event : Union[TaskStatusUpdateEvent, TaskArtifactUpdateEvent, QueueEndEvent] = await queue.get()
-            print(isinstance(event, QueueEndEvent))
+        while True:
+            event: Union[TaskStatusUpdateEvent, TaskArtifactUpdateEvent, QueueEndEvent] = await queue.get()
             if isinstance(event, QueueEndEvent):
                 break
 
             buffer.append(event)
             if isinstance(event, TaskStatusUpdateEvent) and event.status.state == TaskState.WORKING:
                 for part in event.status.message.parts:
-                    writer(part.text)
-
-
-
+                    ui_event = MessageEvent(
+                        content=part.text,
+                        id=event.id,
+                        agent=state["active_agent"]
+                    )
+                    writer(ui_event)
 
         last_state = buffer[-1].status.state
 
         ai_message = convert_a2a_task_events_to_langchain(buffer)
+
+        logger.info(f"Remote agent {current_agent_name} streaming response completed")
 
         return {
             "task_state": last_state,
@@ -203,13 +242,18 @@ async def call_remote_agent(state: AgentState, config: RunnableConfig, writer: S
             "task_id": params.id
         }
 
+
+    logger.info(f"Call remote agent {current_agent_name} in standard mode")
     res = await agent_cli.send_task(payload=params)
     lc_messages = convert_a2a_task_result_to_langchain(res.result)
+    logger.info(f"Remote agent {current_agent_name} response completed")
+
     return {
         "task_state": res.result.status.state,
         "messages": lc_messages,
         "task_id": params.id
     }
+
 
 # Define the state graph
 graph = StateGraph(AgentState)
@@ -222,4 +266,4 @@ graph.set_entry_point("router")
 graph.set_finish_point("router")
 
 # Compile the agent
-agent = graph.compile(checkpointer=MemorySaver(), debug=False)
+supervisor_agent = graph.compile(checkpointer=MemorySaver(), debug=False)

@@ -30,6 +30,11 @@ class HandoffAgent(BaseAgent):
                     - Si l'humain veut prendre contact par mail, propose de l'aide pour rédigier l'email.
                     - Si l'humain veut prendre contact par téléphone, demande lui quand il est joignable pour être rappeler. Demande dans le cas d'un contact par téléphone le numéro de téléphone de l'humain pour le rappeler.
                 
+                
+                Retourne le status "input_required" : si tu as besoin d'informations complémentaires du client.
+                Retourne le status "completed" : si tu considère ta tâche comme terminée, ou la demande comme hors sujet ou que tu n'as pas besoin d'informations complémentaires du client.
+                
+                    
                 """
             ),
             MessagesPlaceholder("messages")

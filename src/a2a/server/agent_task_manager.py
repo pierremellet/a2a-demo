@@ -51,6 +51,7 @@ class AgentTaskManager(InMemoryTaskManager):
                     task_status,
                     None if artifact is None else [artifact],
                 )
+
                 await self.send_task_notification(latest_task)
 
                 if artifact:
@@ -64,6 +65,7 @@ class AgentTaskManager(InMemoryTaskManager):
                 task_update_event = TaskStatusUpdateEvent(
                     id=task_send_params.id, status=task_status, final=end_stream
                 )
+
                 await self.enqueue_events_for_sse(
                     task_send_params.id, task_update_event
                 )
